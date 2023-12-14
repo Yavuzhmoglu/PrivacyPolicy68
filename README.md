@@ -66,3 +66,127 @@ This policy is effective as of 2022-02-19
 **Contact Us**
 
 If you have any questions or suggestions about my Privacy Policy, do not hesitate to contact me at justtouchinfo@gmail.com.
+
+
+1
+
+string kaynakConnectionString = "Data Source=KAYNAK_VERITABANI.db";
+string hedefConnectionString = "Data Source=HEDEF_VERITABANI.db";
+
+using (var kaynakConnection = new SQLiteConnection(kaynakConnectionString))
+using (var hedefConnection = new SQLiteConnection(hedefConnectionString))
+{
+    kaynakConnection.Open();
+    hedefConnection.Open();
+    
+    // "rescuver" adlı kolonun 0 basılması ve diğer tabloda olmayan kolonların null basılması için SQL sorgusu
+    string transferSorgusu = @"
+        INSERT INTO HedefTablo (ID, Isim, rescuver, DiğerKolon)
+        SELECT K.ID, K.Isim, 0 AS rescuver, NULL AS DiğerKolon
+        FROM KaynakTablo K
+        LEFT JOIN HedefTablo H ON K.ID = H.ID
+        WHERE H.ID IS NULL
+    ";
+
+    using (var transferKomut = new SQLiteCommand(transferSorgusu, kaynakConnection))
+    {
+        transferKomut.ExecuteNonQuery();
+    }
+}
+2
+
+
+string kaynakConnectionString = "Data Source=KAYNAK_VERITABANI.db";
+string hedefConnectionString = "Data Source=HEDEF_VERITABANI.db";
+
+// DataContext oluşturma
+using (var kaynakDataContext = new DataContext(kaynakConnectionString))
+using (var hedefDataContext = new DataContext(hedefConnectionString))
+{
+    // Kaynak ve hedef tabloların IQueryable nesnelerini alın
+    var kaynakTablo = kaynakDataContext.GetTable<KaynakTablo>();
+    var hedefTablo = hedefDataContext.GetTable<HedefTablo>();
+
+    // LINQ sorgusu kullanarak veri transferi
+    var eksikSatirlar = from kaynak in kaynakTablo
+                        join hedef in hedefTablo on kaynak.ID equals hedef.ID into gj
+                        from subhedef in gj.DefaultIfEmpty()
+                        where subhedef == null
+                        select new HedefTablo
+                        {
+                            ID = kaynak.ID,
+                            Isim = kaynak.Isim,
+                            rescuver = 0, // rescuver kolonunu 0 olarak atama
+                            DiğerKolon = null // DiğerKolon kolonunu null olarak atama
+                        };
+
+    // Eksik satırları hedef tabloya ekleme
+    hedefTablo.InsertAllOnSubmit(eksikSatirlar);
+    hedefDataContext.SubmitChanges();
+}
+
+
+3
+
+using System;
+using System.Data.SQLite;
+
+namespace VeriBirlestirmeUygulamasi
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            string kaynakBaglantiString = "Data Source=kaynakVeritabani.db;Version=3;";
+            string hedefBaglantiString = "Data Source=hedefVeritabani.db;Version=3;";
+
+            using (SQLiteConnection kaynakBaglanti = new SQLiteConnection(kaynakBaglantiString))
+            using (SQLiteConnection hedefBaglanti = new SQLiteConnection(hedefBaglantiString))
+            {
+                kaynakBaglanti.Open();
+                hedefBaglanti.Open();
+
+                string kaynakSorgu = "SELECT id, ad, soyad, yaş FROM KaynakTablo";
+                SQLiteCommand kaynakKomut = new SQLiteCommand(kaynakSorgu, kaynakBaglanti);
+                SQLiteDataReader kaynakOkuyucu = kaynakKomut.ExecuteReader();
+
+                while (kaynakOkuyucu.Read())
+                {
+                    int id = kaynakOkuyucu.GetInt32(0);
+                    string ad = kaynakOkuyucu.GetString(1);
+                    string soyad = kaynakOkuyucu.GetString(2);
+                    int yas = kaynakOkuyucu.GetInt32(3);
+
+                    // Hedef tabloda aynı satırın tamamen aynısı var mı kontrol et
+                    string hedefKontrolSorgu = "SELECT COUNT(*) FROM HedefTablo WHERE id = @id AND ad = @ad AND soyad = @soyad AND yaş = @yas";
+                    SQLiteCommand hedefKontrolKomut = new SQLiteCommand(hedefKontrolSorgu, hedefBaglanti);
+                    hedefKontrolKomut.Parameters.AddWithValue("@id", id);
+                    hedefKontrolKomut.Parameters.AddWithValue("@ad", ad);
+                    hedefKontrolKomut.Parameters.AddWithValue("@soyad", soyad);
+                    hedefKontrolKomut.Parameters.AddWithValue("@yas", yas);
+
+                    int satirSayisi = Convert.ToInt32(hedefKontrolKomut.ExecuteScalar());
+
+                    if (satirSayisi == 0)
+                    {
+                        // Hedef tabloda aynı satırın tamamen aynısı yoksa ekle
+                        string hedefEklemeSorgu = "INSERT INTO HedefTablo (id, ad, soyad, yaş, cinsiyet, kilo, boy, hobiler) " +
+                                                   "VALUES (@id, @ad, @soyad, @yas, NULL, 0, 0, NULL)";
+
+                        SQLiteCommand hedefEklemeKomut = new SQLiteCommand(hedefEklemeSorgu, hedefBaglanti);
+                        hedefEklemeKomut.Parameters.AddWithValue("@id", id);
+                        hedefEklemeKomut.Parameters.AddWithValue("@ad", ad);
+                        hedefEklemeKomut.Parameters.AddWithValue("@soyad", soyad);
+                        hedefEklemeKomut.Parameters.AddWithValue("@yas", yas);
+
+                        hedefEklemeKomut.ExecuteNonQuery();
+                    }
+                    // Eğer aynı satırın tamamen aynısı varsa atla ve bir sonraki kayda geç
+                }
+
+                kaynakBaglanti.Close();
+                hedefBaglanti.Close();
+            }
+        }
+    }
+}
